@@ -1,5 +1,10 @@
 ## Changelog
 
+### 3.1.0 (in progress)
+
+- [bug] JAVA-1161: ZonedDateTimeCodec and DateTimeCodec do not preserve time zone ID, only the offset.
+
+
 ### 3.0.0
 
 - [bug] JAVA-1034: fix metadata parser for collections of custom types.

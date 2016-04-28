@@ -20,18 +20,18 @@ import com.datastax.driver.core.exceptions.InvalidTypeException;
 
 import java.nio.ByteBuffer;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.TemporalQueries;
 import java.util.List;
 
 import static com.datastax.driver.core.ParseUtils.isLongLiteral;
 import static com.datastax.driver.core.ParseUtils.quote;
 import static com.google.common.base.Preconditions.checkArgument;
-import static java.time.temporal.ChronoField.*;
+import static java.time.format.DateTimeFormatter.ISO_DATE_TIME;
 
 /**
  * {@link TypeCodec} that maps
@@ -42,50 +42,90 @@ import static java.time.temporal.ChronoField.*;
  * Since Cassandra's <code>timestamp</code> type preserves only
  * milliseconds since epoch, any timezone information
  * would normally be lost. By using a
- * <code>tuple&lt;timestamp,varchar&gt;</code> a timezone ID can be
+ * <code>tuple&lt;timestamp,varchar&gt;</code> a timezone can be
  * persisted in the <code>varchar</code> field such that when the
- * value is deserialized the timezone is
- * preserved.
- * <p/>
- * <strong>IMPORTANT</strong>: this codec's {@link #format(Object) format} method formats
- * timestamps using an ISO-8601 format that includes milliseconds.
- * <strong>This format is incompatible with Cassandra versions < 2.0.9.</strong>
+ * value is deserialized the timezone is preserved.
+ * <p>
+ * <strong>IMPORTANT</strong>
+ * <p>
+ * 1) The default timestamp formatter used by this codec produces CQl literals
+ * that may include milliseconds.
+ * <strong>This literal format is incompatible with Cassandra < 2.0.9.</strong>
+ * <p>
+ * 2) Even if the ISO-8601 standard accepts timestamps with nanosecond precision,
+ * Cassandra timestamps have millisecond precision; therefore, any sub-millisecond
+ * value set on a {@link ZonedDateTime} will be lost when persisted to Cassandra.
  *
  * @see <a href="https://cassandra.apache.org/doc/cql3/CQL-2.2.html#usingtimestamps">'Working with timestamps' section of CQL specification</a>
  */
+@SuppressWarnings("Since15")
 public class ZonedDateTimeCodec extends TypeCodec.AbstractTupleCodec<ZonedDateTime> {
 
     /**
-     * A {@link DateTimeFormatter} that parses (most) of
+     * The default {@link DateTimeFormatter} that parses (most) of
      * the ISO formats accepted in CQL.
      */
-    private static final DateTimeFormatter FORMATTER = new DateTimeFormatterBuilder()
-            .parseCaseSensitive()
-            .parseStrict()
-            .append(DateTimeFormatter.ISO_LOCAL_DATE)
-            .optionalStart()
-            .appendLiteral('T')
-            .appendValue(HOUR_OF_DAY, 2)
-            .appendLiteral(':')
-            .appendValue(MINUTE_OF_HOUR, 2)
-            .optionalEnd()
-            .optionalStart()
-            .appendLiteral(':')
-            .appendValue(SECOND_OF_MINUTE, 2)
-            .optionalEnd()
-            .optionalStart()
-            .appendFraction(NANO_OF_SECOND, 0, 9, true)
-            .optionalEnd()
-            .optionalStart()
+    private static final DateTimeFormatter DEFAULT_DATE_TIME_FORMATTER = ISO_DATE_TIME.withZone(ZoneOffset.UTC);
+
+    /**
+     * The default {@link DateTimeFormatter} to parse and format zones.
+     */
+    private static final DateTimeFormatter DEFAULT_ZONE_FORMATTER = new DateTimeFormatterBuilder()
             .appendZoneOrOffsetId()
-            .optionalEnd()
-            .toFormatter()
-            .withZone(ZoneOffset.UTC);
+            .toFormatter();
 
-    private static final DateTimeFormatter ZONE_FORMATTER = DateTimeFormatter.ofPattern("xxx");
+    private final DateTimeFormatter dateTimeFormatter;
 
+    private final DateTimeFormatter zoneFormatter;
+
+    /**
+     * Creates a new {@link ZonedDateTimeCodec} for the given tuple
+     * and with default {@link DateTimeFormatter formatters} for
+     * both the timestamp and the zone components.
+     * <p>
+     * The default formatters produce CQL timestamp literals of the following form:
+     * <ol>
+     * <li>Timestamp component: an ISO-8601 full date and time pattern, including at least: year,
+     * month, day, hour and minutes, and optionally, seconds and milliseconds,
+     * followed by the zone ID {@code Z} (UTC),
+     * e.g. {@code 2010-06-30T02:01Z} or {@code 2010-06-30T01:20:47.999Z};
+     * note that timestamp components are always expressed in UTC time, hence the zone ID {@code Z}.</li>
+     * <li>Zone component: a zone offset such as {@code -07:00}, or a zone ID such as {@code UTC} or {@code Europe/Paris},
+     * depending on what information is available.</li>
+     * </ol>
+     *
+     * @param tupleType The tuple type this codec should handle.
+     *                  It must be a {@code tuple<timestamp,varchar>}.
+     * @throws IllegalArgumentException if the provided tuple type is not a {@code tuple<timestamp,varchar>}.
+     */
     public ZonedDateTimeCodec(TupleType tupleType) {
+        this(tupleType, DEFAULT_DATE_TIME_FORMATTER, DEFAULT_ZONE_FORMATTER);
+    }
+
+    /**
+     * Creates a new {@link ZonedDateTimeCodec} for the given tuple
+     * and with the provided {@link DateTimeFormatter formatters} for
+     * the timestamp and the zone components of the tuple.
+     * <p>
+     * Use this constructor if you intend to customize the way the codec
+     * parses and formats timestamps and zones. Beware that Cassandra only accepts
+     * timestamp literals in some of the most common ISO-8601 formats;
+     * attempting to use non-standard formats could result in invalid CQL literals.
+     *
+     * @param tupleType         The tuple type this codec should handle.
+     *                          It must be a {@code tuple<timestamp,varchar>}.
+     * @param dateTimeFormatter The {@link DateTimeFormatter} to use
+     *                          to parse and format the timestamp component of the tuple.
+     *                          This formatter should be configured to always format timestamps in UTC
+     *                          (see {@link DateTimeFormatter#withZone(java.time.ZoneId)}.
+     * @param zoneFormatter     The {@link DateTimeFormatter} to use
+     *                          to parse and format the zone component of the tuple.
+     * @throws IllegalArgumentException if the provided tuple type is not a {@code tuple<timestamp,varchar>}.
+     */
+    public ZonedDateTimeCodec(TupleType tupleType, DateTimeFormatter dateTimeFormatter, DateTimeFormatter zoneFormatter) {
         super(tupleType, ZonedDateTime.class);
+        this.dateTimeFormatter = dateTimeFormatter;
+        this.zoneFormatter = zoneFormatter;
         List<DataType> types = tupleType.getComponentTypes();
         checkArgument(
                 types.size() == 2 && types.get(0).equals(DataType.timestamp()) && types.get(1).equals(DataType.varchar()),
@@ -105,7 +145,7 @@ public class ZonedDateTimeCodec extends TypeCodec.AbstractTupleCodec<ZonedDateTi
             return bigint().serializeNoBoxing(millis, protocolVersion);
         }
         if (index == 1) {
-            return varchar().serialize(ZONE_FORMATTER.format(source.getOffset()), protocolVersion);
+            return varchar().serialize(zoneFormatter.format(source), protocolVersion);
         }
         throw new IndexOutOfBoundsException("Tuple index out of bounds. " + index);
     }
@@ -118,7 +158,7 @@ public class ZonedDateTimeCodec extends TypeCodec.AbstractTupleCodec<ZonedDateTi
         }
         if (index == 1) {
             String zoneId = varchar().deserialize(input, protocolVersion);
-            return target.withZoneSameInstant(ZoneId.of(zoneId));
+            return target.withZoneSameInstant(zoneFormatter.parse(zoneId, TemporalQueries.zone()));
         }
         throw new IndexOutOfBoundsException("Tuple index out of bounds. " + index);
     }
@@ -126,10 +166,10 @@ public class ZonedDateTimeCodec extends TypeCodec.AbstractTupleCodec<ZonedDateTi
     @Override
     protected String formatField(ZonedDateTime value, int index) {
         if (index == 0) {
-            return quote(FORMATTER.format(value));
+            return quote(dateTimeFormatter.format(value));
         }
         if (index == 1) {
-            return quote(ZONE_FORMATTER.format(value.getOffset()));
+            return quote(zoneFormatter.format(value));
         }
         throw new IndexOutOfBoundsException("Tuple index out of bounds. " + index);
     }
@@ -149,14 +189,14 @@ public class ZonedDateTimeCodec extends TypeCodec.AbstractTupleCodec<ZonedDateTi
                 }
             }
             try {
-                return ZonedDateTime.from(FORMATTER.parse(input));
+                return ZonedDateTime.from(dateTimeFormatter.parse(input));
             } catch (DateTimeParseException e) {
                 throw new InvalidTypeException(String.format("Cannot parse timestamp value from \"%s\"", target));
             }
         }
         if (index == 1) {
             String zoneId = varchar().parse(input);
-            return target.withZoneSameInstant(ZoneId.of(zoneId));
+            return target.withZoneSameInstant(zoneFormatter.parse(zoneId, TemporalQueries.zone()));
         }
         throw new IndexOutOfBoundsException("Tuple index out of bounds. " + index);
     }
