@@ -2,8 +2,6 @@ environment:
   test_profile: default
   cassandra_version: 3.0.5
   matrix:
-    - java_version: 1.6.0
-    - java_version: 1.7.0
     - java_version: 1.8.0
       test_profile: short
       platform: x64
