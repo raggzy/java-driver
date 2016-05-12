@@ -129,12 +129,10 @@ If (!(Test-Path C:\Users\appveyor\.ccm\repository\$env:cassandra_version)) {
 }
 
 # Clone scassandra from git and build it.
-$scassandra_dir="$($dep_dir)\scassandra-server"
-If (!(Test-Path $scassandra_dir)) {
-  Write-Host "Cloning Scassandra tolbertam feature/156"
-  Start-Process git -ArgumentList "clone --branch=feature/156 --depth=1 https://github.com/tolbertam/scassandra-server.git $scassandra_dir" -Wait -nnw
-  Write-Host "Building Scassandra"
-  Push-Location $scassandra_dir
-  Start-Process .\gradlew.bat -ArgumentList "install -x signArchives" -Wait -nnw
-  Pop-Location
-}
+$scassandra_dir="C:\Users\appveyor\scassandra-server"
+Write-Host "Cloning Scassandra tolbertam feature/156"
+Start-Process git -ArgumentList "clone --branch=feature/156 --depth=1 https://github.com/tolbertam/scassandra-server.git $scassandra_dir" -Wait -nnw
+Write-Host "Building Scassandra"
+Push-Location $scassandra_dir
+Start-Process .\gradlew.bat -ArgumentList "install -x signArchives" -Wait -nnw
+Pop-Location
